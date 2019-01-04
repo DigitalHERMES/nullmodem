@@ -1,6 +1,6 @@
 /* ########################################################################
 
-   nullmodem - linux null modem emulator (module)
+   Nullmodem - linux null modem emulator (module)
 
    ########################################################################
 
@@ -395,7 +395,7 @@ static void nullmodem_close(struct tty_struct *tty, struct file *file)
 static int nullmodem_write(struct tty_struct *tty, const unsigned char *buffer, int count)
 {
 	struct nullmodem_end *end = tty->driver_data;
-	unsigned long flags;
+	/* unsigned long flags; */
 	int written = 0;
 
 	if (tty->stopped)
@@ -714,7 +714,7 @@ static int nullmodem_ioctl(struct tty_struct *tty, struct file *filp, unsigned i
 static void nullmodem_send_xchar(struct tty_struct *tty, char ch)
 {
 	struct nullmodem_end *end = tty->driver_data;
-	unsigned long flags;
+	/* unsigned long flags; */
 
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
