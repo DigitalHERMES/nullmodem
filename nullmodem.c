@@ -24,6 +24,13 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
    For e-mail suggestions :  pitti98@googlemail.com
+
+   ****
+   Modifications in January 2019 by twitzelbos
+   Move termios from pointer to structure (>= 3.7.0)
+   Use tty_port instead of buffer (>= 3.8.0)
+   Use new signal API (>= 4.11.0)
+   Use timer_lists https://lwn.net/Articles/735887/ (>= 4.14.0)
    ######################################################################## */
 
 
