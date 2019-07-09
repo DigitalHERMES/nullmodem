@@ -1,12 +1,8 @@
-This implements a virtual nullmodem driver for linux as a kernel module.
+This software implements a virtual nullmodem driver for Linux as a kernel module.
 
-I wrote this when I needed a real virtual nullmodem emulator that could emulate the control lines and
-handle ioctl() calls for TIOCMIWAIT like a real hardware device.
+This software is based on tty0tty project on sourceforge.
 
-I found the tty0tty project on sourceforge but it did not do what I needed,
-so I took it as a basis and started hacking.
-
-I also posted a response on stackoverflow where someone asked for a nullmodem emulator:
+A discussion about this driver is also fount on stackoverflow where someone asked for a nullmodem emulator:
 http://stackoverflow.com/questions/52187/virtual-serial-port-for-linux
 
 Introduction:
@@ -77,18 +73,6 @@ You can uncomment them if you want.
 
 Notes/disclaimer:
 
-This was my first attempt at kernel hacking. Likewise I did not do any extensive stability testing.
-If it fails for you - bad luck :)
-Well, you can contact me, and I might try and find a fix.
-But, I wrote this quite some time ago, and I don't remember everything about writing kernel drivers,
-or which features this driver may be lacking.
-I apologize if the code style does not conform to any linux kernel coding rules.
+This driver had no extensive stability testing. It can crash your kernel. Please submit pull request for fixes or improvements.
 
-If anyone of the kernel staff wants to include this in the kernel distribution as an experimental driver,
-please go ahead. Maybe this thing will come to life and/or find a new maintainer.
-
-
-That said, may it be useful to you!
-
-Peter Remmers
-pitti98@googlemail.com
+Authors: Greg Kroah-Hartman, Luis Claudio Gambôa Lopes, Peter Remmers and Rafael Diniz. 
