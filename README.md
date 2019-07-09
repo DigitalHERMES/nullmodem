@@ -21,7 +21,7 @@ Features:
 - line speed emulation
 
   Unlike pseudo terminals, this driver emulates serial line speed by using a timer.
-  So if you set the line speed to 9600 baud, the througput will be about 960 cps.
+  So if you set the line speed to 9600 baud, the througput will be about 9600 cps.
   The driver takes mismatching configuration of the two ends of the virtual line into account.
   So if one end is configured for a different baud rate than the other end, each end will not
   receive any data from the other end.
