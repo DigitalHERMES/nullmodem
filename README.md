@@ -2,7 +2,7 @@ This software implements a virtual nullmodem driver for Linux as a kernel module
 
 This software is based on tty0tty project on sourceforge.
 
-A discussion about this driver is also fount on stackoverflow where someone asked for a nullmodem emulator:
+A discussion about this driver is also found on stackoverflow where someone asked for a nullmodem emulator:
 http://stackoverflow.com/questions/52187/virtual-serial-port-for-linux
 
 Introduction:
