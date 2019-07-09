@@ -1,13 +1,14 @@
 /* ########################################################################
 
-   Nullmodem - linux null modem emulator (module)
+   nullmodem - linux (>3.7) null modem emulator (kernel module)
 
    ########################################################################
 
-   Copyright (c) : 2012 Peter Remmers
-
-	Based on tty0tty driver -  Copyright (c) : 2010  Luis Claudio Gambôa Lopes
-	Based on Tiny TTY driver -  Copyright (C) 2002-2004 Greg Kroah-Hartman (greg@kroah.com)
+   Copyright (c) : 2015 Jacob Goense
+   
+   Based on nullmodem driver (c)      2012  Peter Remmers
+   Based on tty0tty driver   (c)      2010  Luis Claudio Gambôa Lopes
+   Based on Tiny TTY driver  (c) 2002-2004  Greg Kroah-Hartman
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,18 +24,11 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
-   For e-mail suggestions :  pitti98@googlemail.com
 
-   ****
-   Modifications in January 2019 by twitzelbos
-   Move termios from pointer to structure (>= 3.7.0)
-   Use tty_port instead of buffer (>= 3.8.0)
-   Use new signal API (>= 4.11.0)
-   Use timer_lists https://lwn.net/Articles/735887/ (>= 4.14.0)
    ######################################################################## */
 
 
-#include <linux/version.h>
+//#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -48,13 +42,10 @@
 #include <linux/sched.h>
 #include <linux/kfifo.h>
 #include <asm/uaccess.h>
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/signal.h>
-#endif
 
-#define DRIVER_VERSION "v1.1"
-#define DRIVER_AUTHOR "Peter Remmers <pitti98@googlemail.com>"
+#define DRIVER_VERSION "v3.7"
+#define DRIVER_AUTHOR "Jacob Goense <dugo@xs4all.nl>"
 #define DRIVER_DESC "nullmodem driver"
 
 /* Module information */
@@ -69,43 +60,39 @@ MODULE_LICENSE("GPL");
 #endif
 
 #define NULLMODEM_MAJOR		240	/* experimental range */
-#define NULLMODEM_PAIRS		4
+#define NULLMODEM_PAIRS		2
 
 #define TIMER_INTERVAL (HZ/20)
 //#define TIMER_INTERVAL HZ
 #define TX_BUF_SIZE 4096
 #define WAKEUP_CHARS 256
 
+static struct tty_port *tport;
+
 struct nullmodem_pair;
 struct nullmodem_end
 {
-	struct tty_struct		*tty;		/* pointer to the tty for this device */
+	struct tty_struct	*tty;		/* pointer to the tty for this device */
 	struct nullmodem_end	*other;
 	struct nullmodem_pair	*pair;
-	struct async_icount		icount;
+	struct async_icount	icount;
 	struct serial_struct	serial;
-	unsigned char			xchar;
-	unsigned char			char_length;
-	unsigned				nominal_bit_count;
-	unsigned				actual_bit_count;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)	
-	struct kfifo			fifo;
-#else
-	struct kfifo			*fifo;
-#endif
+	unsigned char		xchar;
+	unsigned char		char_length;
+	unsigned		nominal_bit_count;
+	unsigned		actual_bit_count;
+	struct kfifo		fifo;
 };
 struct nullmodem_pair
 {
-	spinlock_t				spin;		/* locks this structure */
+	spinlock_t		spin;		/* locks this structure */
 	struct nullmodem_end	a;
 	struct nullmodem_end	b;
-	int						control_lines;	/* control lines as seen from end a */
-	wait_queue_head_t		control_lines_wait;
+	int			control_lines;	/* control lines as seen from end a */
+	wait_queue_head_t	control_lines_wait;
 };
 static struct nullmodem_pair pair_table[NULLMODEM_PAIRS];
-
 static struct timer_list nullmodem_timer;
-
 static int switch_pin_view(int pins)
 {
 	int out = 0;
@@ -131,7 +118,8 @@ static void change_pins(struct nullmodem_end *end, unsigned int set, unsigned in
 	if (is_end_b)
 		old_pins = switch_pin_view(old_pins);
 
-	int new_pins = (old_pins & ~clear) | set;
+	int new_pins;
+	new_pins = (old_pins & ~clear) | set;
 	int change = old_pins ^ new_pins;
 
 	if (is_end_b)
@@ -150,11 +138,7 @@ static void change_pins(struct nullmodem_end *end, unsigned int set, unsigned in
 	}
 
 	if (end->other->tty
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	&& (end->other->tty->termios.c_cflag & CRTSCTS)
-#else
-	&& (end->other->tty->termios->c_cflag & CRTSCTS)
-#endif
 	&& (change&TIOCM_RTS))
 	{
 		if (!(new_pins&TIOCM_RTS))
@@ -169,7 +153,6 @@ static void change_pins(struct nullmodem_end *end, unsigned int set, unsigned in
 	if (change)
 		wake_up_interruptible(&end->pair->control_lines_wait);
 }
-
 static unsigned char drain[TX_BUF_SIZE];
 static unsigned long last_timer_jiffies;
 static unsigned long delta_jiffies;
@@ -183,12 +166,8 @@ static inline void handle_end(struct nullmodem_end *end)
 		//dprintf("%s - #%d: hw_stopped\n", __FUNCTION__, end->tty->index);
 		return;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
-	unsigned nominal_bits = end->tty->termios.c_ospeed * FACTOR * delta_jiffies / HZ;
-#else
-	unsigned nominal_bits = end->tty->termios->c_ospeed * FACTOR * delta_jiffies / HZ;
-#endif
-	
+	unsigned nominal_bits;
+	nominal_bits = end->tty->termios.c_ospeed * FACTOR * delta_jiffies / HZ;
 	unsigned add_bits = end->nominal_bit_count - end->actual_bit_count;
 	unsigned chars = (nominal_bits+add_bits) / end->char_length;
 	unsigned actual_bits = chars * end->char_length;
@@ -203,11 +182,8 @@ static inline void handle_end(struct nullmodem_end *end)
 	if (chars == 0)
 		return;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)	
-	int cnt = kfifo_out(&end->fifo, drain, chars);
-#else
-	int cnt = __kfifo_get(end->fifo, drain, chars);
-#endif
+	int cnt;
+	cnt = kfifo_out(&end->fifo, drain, chars);
 	if (cnt < chars)
 	{
 		end->nominal_bit_count = 0;
@@ -223,19 +199,11 @@ static inline void handle_end(struct nullmodem_end *end)
 
 	if (end->other->tty)
 	{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
-	  if (end->tty->termios.c_ospeed == end->other->tty->termios.c_ispeed
+		if (end->tty->termios.c_ospeed == end->other->tty->termios.c_ispeed
 		&& (end->tty->termios.c_cflag & (CSIZE|PARENB|CSTOPB))
 		 ==(end->other->tty->termios.c_cflag & (CSIZE|PARENB|CSTOPB)))
 		{
 			tcflag_t csize = (end->tty->termios.c_cflag&CSIZE);
-#else
-	  if (end->tty->termios->c_ospeed == end->other->tty->termios->c_ispeed
-		&& (end->tty->termios->c_cflag & (CSIZE|PARENB|CSTOPB))
-		 ==(end->other->tty->termios->c_cflag & (CSIZE|PARENB|CSTOPB)))
-		{
-			tcflag_t csize = (end->tty->termios->c_cflag&CSIZE);
-#endif
 			if (csize != CS8)
 			{
 				int i;
@@ -249,19 +217,12 @@ static inline void handle_end(struct nullmodem_end *end)
 				for (i=0; i<cnt; ++i)
 					drain[i] &= mask;
 			}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
-			int written = tty_insert_flip_string(end->other->tty->port, drain, cnt);
-#else
-			int written = tty_insert_flip_string(end->other->tty, drain, cnt);
-#endif
+			int written;
+			written = tty_insert_flip_string(end->other->tty->port, drain, cnt);
 			if (written > 0)
 			{
 				//dprintf("%s - #%d -> #%d: copied %d bytes\n", __FUNCTION__, end->tty->index, end->other->tty->index, written);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
-			  tty_flip_buffer_push(end->other->tty->port);
-#else
-				tty_flip_buffer_push(end->other->tty);
-#endif
+				tty_flip_buffer_push(end->other->tty->port);
 			}
 		}
 	}
@@ -269,12 +230,7 @@ static inline void handle_end(struct nullmodem_end *end)
 //	if (kfifo_len(&end->fifo) < WAKEUP_CHARS)
 		tty_wakeup(end->tty);
 }
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static void nullmodem_timer_proc(struct timer_list *list)
-#else
-static void nullmodem_timer_proc(unsigned long data)
-#endif
 {
 	int i;
 	unsigned long flags;
@@ -308,11 +264,8 @@ static void handle_termios(struct tty_struct *tty)
 	else
 		change_pins(end, TIOCM_DTR|TIOCM_RTS, 0);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
-	unsigned int cflag = tty->termios.c_cflag;
-#else
-	unsigned int cflag = tty->termios->c_cflag;
-#endif
+	unsigned int cflag;
+	cflag = tty->termios.c_cflag;
 	end->char_length = 2;
 	switch (cflag & CSIZE)
 	{
@@ -326,19 +279,15 @@ static void handle_termios(struct tty_struct *tty)
 	if (cflag & CSTOPB) end->char_length += 1;
 	end->char_length *= FACTOR;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	tty->hw_stopped = (tty->termios.c_cflag&CRTSCTS)
-	  && !(get_pins(end) & TIOCM_CTS);
-#else
-	tty->hw_stopped = (tty->termios->c_cflag&CRTSCTS)
 					&& !(get_pins(end) & TIOCM_CTS);
-#endif
 }
 static int nullmodem_open(struct tty_struct *tty, struct file *file)
 {
 	struct nullmodem_pair *pair = &pair_table[tty->index/2];
 	struct nullmodem_end *end = ((tty->index&1) ? &pair->b : &pair->a);
 	unsigned long flags;
+	int index;
 	int err = -ENOMEM;
 
 	dprintf("%s - #%d c:%d\n", __FUNCTION__, tty->index, tty->count);
@@ -346,15 +295,13 @@ static int nullmodem_open(struct tty_struct *tty, struct file *file)
 	if (tty->count > 1)
 		return 0;
 
+	index = tty->index;
+	tport[index].tty=tty;
+	tty->port = &tport[index];
+
 	spin_lock_irqsave(&end->pair->spin, flags);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)	
 	if (kfifo_alloc(&end->fifo, TX_BUF_SIZE, GFP_KERNEL))
 		goto exit;
-#else
-	end->fifo = kfifo_alloc(TX_BUF_SIZE, GFP_KERNEL, NULL);
-	if (!end->fifo)
-		goto exit;
-#endif
 	tty->driver_data = end;
 	end->tty = tty;
 	end->nominal_bit_count = 0;
@@ -379,12 +326,7 @@ static void nullmodem_close(struct tty_struct *tty, struct file *file)
 	spin_lock_irqsave(&end->pair->spin, flags);
 	end->tty = NULL;
 	change_pins(end, 0, TIOCM_RTS|TIOCM_DTR);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)	
 	kfifo_free(&end->fifo);
-#else
-	kfifo_free(end->fifo);
-	end->fifo = NULL;
-#endif
 	tty->hw_stopped = 1;
 	spin_unlock_irqrestore(&end->pair->spin, flags);
 
@@ -395,7 +337,6 @@ static void nullmodem_close(struct tty_struct *tty, struct file *file)
 static int nullmodem_write(struct tty_struct *tty, const unsigned char *buffer, int count)
 {
 	struct nullmodem_end *end = tty->driver_data;
-	/* unsigned long flags; */
 	int written = 0;
 
 	if (tty->stopped)
@@ -404,11 +345,7 @@ static int nullmodem_write(struct tty_struct *tty, const unsigned char *buffer, 
 		return 0;
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
 	written = kfifo_in(&end->fifo, buffer, count);
-#else
-	written = __kfifo_put(end->fifo, buffer, count);
-#endif
 	//dprintf("%s - #%d %d bytes --> %d written\n", __FUNCTION__, tty->index, count, written);
 	return written;
 }
@@ -423,11 +360,7 @@ static int nullmodem_write_room(struct tty_struct *tty)
 		dprintf("%s - #%d --> %d (tty stopped)\n", __FUNCTION__, tty->index, room);
 		return 0;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)	
 	room = kfifo_avail(&end->fifo);
-#else
-	room = TX_BUF_SIZE - __kfifo_len(end->fifo);
-#endif
 	//dprintf("%s - #%d --> %d\n", __FUNCTION__, tty->index, room);
 	return room;
 }
@@ -442,22 +375,13 @@ static void nullmodem_set_termios(struct tty_struct *tty, struct ktermios *old_t
 
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	cflag = tty->termios.c_cflag;
-#else
-	cflag = tty->termios->c_cflag;
-#endif
-	
+
 	/* check that they really want us to change something */
 	if (old_termios)
 	{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
-	  if (cflag == old_termios->c_cflag
-	      && RELEVANT_IFLAG(tty->termios.c_iflag) == RELEVANT_IFLAG(old_termios->c_iflag))
-#else
 		if (cflag == old_termios->c_cflag
-		&& RELEVANT_IFLAG(tty->termios->c_iflag) == RELEVANT_IFLAG(old_termios->c_iflag))
-#endif
+		&& RELEVANT_IFLAG(tty->termios.c_iflag) == RELEVANT_IFLAG(old_termios->c_iflag))
 		{
 			dprintf(" - nothing to change...\n");
 			return;
@@ -470,13 +394,9 @@ static void nullmodem_set_termios(struct tty_struct *tty, struct ktermios *old_t
 #ifdef SCULL_DEBUG
 	speed_t speed = tty_get_baud_rate(tty);
 	dprintf(" - baud = %u", speed);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	dprintf(" - ispeed = %u", tty->termios.c_ispeed);
 	dprintf(" - ospeed = %u", tty->termios.c_ospeed);
-#else
-	dprintf(" - ispeed = %u", tty->termios->c_ispeed);
-	dprintf(" - ospeed = %u", tty->termios->c_ospeed);
-#endif
+
 	/* get the byte size */
 	switch (cflag & CSIZE)
 	{
@@ -527,11 +447,7 @@ static void nullmodem_set_termios(struct tty_struct *tty, struct ktermios *old_t
 #endif
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
 static int nullmodem_tiocmget(struct tty_struct *tty)
-#else
-static int nullmodem_tiocmget(struct tty_struct *tty, struct file *filp)
-#endif
 {
 	struct nullmodem_end *end = tty->driver_data;
 	unsigned long flags;
@@ -545,11 +461,7 @@ static int nullmodem_tiocmget(struct tty_struct *tty, struct file *filp)
 	return retval;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
 static int nullmodem_tiocmset(struct tty_struct *tty, unsigned int set, unsigned int clear)
-#else
-static int nullmodem_tiocmset(struct tty_struct *tty, struct file *filp, unsigned int set, unsigned int clear)
-#endif
 {
 	struct nullmodem_end *end = tty->driver_data;
 	unsigned long flags;
@@ -580,18 +492,18 @@ static int nullmodem_ioctl_tiocgserial(struct tty_struct *tty, unsigned long arg
 	memset(&tmp, 0, sizeof(tmp));
 
 	spin_lock_irqsave(&end->pair->spin, flags);
-	tmp.type			= serial->type;
-	tmp.line			= serial->line;
-	tmp.port			= serial->port;
-	tmp.irq				= serial->irq;
-	tmp.flags			= ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
+	tmp.type		= serial->type;
+	tmp.line		= serial->line;
+	tmp.port		= serial->port;
+	tmp.irq			= serial->irq;
+	tmp.flags		= ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
 	tmp.xmit_fifo_size	= serial->xmit_fifo_size;
 	tmp.baud_base		= serial->baud_base;
 	tmp.close_delay		= 5*HZ;
 	tmp.closing_wait	= 30*HZ;
 	tmp.custom_divisor	= serial->custom_divisor;
-	tmp.hub6			= serial->hub6;
-	tmp.io_type			= serial->io_type;
+	tmp.hub6		= serial->hub6;
+	tmp.io_type		= serial->io_type;
 	spin_unlock_irqrestore(&end->pair->spin, flags);
 
 	if (copy_to_user((void __user *)arg, &tmp, sizeof(struct serial_struct)))
@@ -669,16 +581,16 @@ static int nullmodem_ioctl_tiocgicount(struct tty_struct *tty, unsigned long arg
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
 	spin_lock_irqsave(&end->pair->spin, flags);
-	icount.cts			= end->icount.cts;
-	icount.dsr			= end->icount.dsr;
-	icount.rng			= end->icount.rng;
-	icount.dcd			= end->icount.dcd;
-	icount.rx			= end->icount.rx;
-	icount.tx			= end->icount.tx;
+	icount.cts		= end->icount.cts;
+	icount.dsr		= end->icount.dsr;
+	icount.rng		= end->icount.rng;
+	icount.dcd		= end->icount.dcd;
+	icount.rx		= end->icount.rx;
+	icount.tx		= end->icount.tx;
 	icount.frame		= end->icount.frame;
 	icount.overrun		= end->icount.overrun;
 	icount.parity		= end->icount.parity;
-	icount.brk			= end->icount.brk;
+	icount.brk		= end->icount.brk;
 	icount.buf_overrun	= end->icount.buf_overrun;
 	spin_unlock_irqrestore(&end->pair->spin, flags);
 
@@ -687,11 +599,7 @@ static int nullmodem_ioctl_tiocgicount(struct tty_struct *tty, unsigned long arg
 	return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
 static int nullmodem_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg)
-#else
-static int nullmodem_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd, unsigned long arg)
-#endif
 {
 	if (cmd == TCGETS || cmd == TCSETS)
 		return -ENOIOCTLCMD;
@@ -714,7 +622,6 @@ static int nullmodem_ioctl(struct tty_struct *tty, struct file *filp, unsigned i
 static void nullmodem_send_xchar(struct tty_struct *tty, char ch)
 {
 	struct nullmodem_end *end = tty->driver_data;
-	/* unsigned long flags; */
 
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
@@ -723,19 +630,15 @@ static void nullmodem_send_xchar(struct tty_struct *tty, char ch)
 
 static void nullmodem_throttle(struct tty_struct * tty)
 {
-	struct nullmodem_end *end = tty->driver_data;
 	unsigned long flags;
+	struct nullmodem_end *end = tty->driver_data;
 
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
 	if (I_IXOFF(tty))
 		nullmodem_send_xchar(tty, STOP_CHAR(tty));
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	if (tty->termios.c_cflag & CRTSCTS)
-#else
-	if (tty->termios->c_cflag & CRTSCTS)
-#endif
 	{
 		spin_lock_irqsave(&end->pair->spin, flags);
 		change_pins(end, 0, TIOCM_RTS);
@@ -745,16 +648,12 @@ static void nullmodem_throttle(struct tty_struct * tty)
 
 static void nullmodem_unthrottle(struct tty_struct * tty)
 {
-	struct nullmodem_end *end = tty->driver_data;
 	unsigned long flags;
+	struct nullmodem_end *end = tty->driver_data;
 
 	dprintf("%s - #%d\n", __FUNCTION__, tty->index);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
 	if (tty->termios.c_cflag & CRTSCTS)
-#else
-	if (tty->termios->c_cflag & CRTSCTS)
-#endif
 	{
 		spin_lock_irqsave(&end->pair->spin, flags);
 		change_pins(end, TIOCM_RTS, 0);
@@ -766,17 +665,17 @@ static void nullmodem_unthrottle(struct tty_struct * tty)
 
 static struct tty_operations serial_ops =
 {
-	.open = nullmodem_open,
-	.close = nullmodem_close,
-	.throttle = nullmodem_throttle,
-	.unthrottle = nullmodem_unthrottle,
-	.write = nullmodem_write,
-	.write_room = nullmodem_write_room,
-	.set_termios = nullmodem_set_termios,
+	.open		= nullmodem_open,
+	.close		= nullmodem_close,
+	.throttle	= nullmodem_throttle,
+	.unthrottle	= nullmodem_unthrottle,
+	.write		= nullmodem_write,
+	.write_room	= nullmodem_write_room,
+	.set_termios	= nullmodem_set_termios,
 	//.send_xchar = nullmodem_send_xchar,
-	.tiocmget = nullmodem_tiocmget,
-	.tiocmset = nullmodem_tiocmset,
-	.ioctl = nullmodem_ioctl,
+	.tiocmget	= nullmodem_tiocmget,
+	.tiocmset	= nullmodem_tiocmset,
+	.ioctl		= nullmodem_ioctl,
 };
 
 static struct tty_driver *nullmodem_tty_driver;
@@ -787,30 +686,30 @@ static int __init nullmodem_init(void)
 	int i;
 	dprintf("%s - \n", __FUNCTION__);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
-	timer_setup(&nullmodem_timer, nullmodem_timer_proc, 0);	
-#else
-	init_timer(&nullmodem_timer);
-	setup_timer(&nullmodem_timer, nullmodem_timer_proc, 0);
-#endif
+	timer_setup(&nullmodem_timer, nullmodem_timer_proc, 0);
+	
+	tport = kmalloc(2*NULLMODEM_PAIRS*sizeof(struct tty_port),GFP_KERNEL);
+
 	for (i = 0; i < NULLMODEM_PAIRS; ++i)
 	{
 		struct nullmodem_pair *pair = &pair_table[i];
 		memset(pair, 0, sizeof(*pair));
-		pair->a.other = &pair->b;
-		pair->a.pair = pair;
-		pair->b.other = &pair->a;
-		pair->b.pair = pair;
-		pair->a.char_length = 10 * FACTOR;
-		pair->b.char_length = 10 * FACTOR;
+		pair->a.other		= &pair->b;
+		pair->a.pair		= pair;
+		pair->b.other		= &pair->a;
+		pair->b.pair		= pair;
+		pair->a.char_length	= 10 * FACTOR;
+		pair->b.char_length	= 10 * FACTOR;
 		spin_lock_init(&pair->spin);
 		init_waitqueue_head(&pair->control_lines_wait);
 		dprintf("%s - initialized pair %d -> %p\n", __FUNCTION__, i, pair);
 	}
 
 	/* allocate the tty driver */
-	nullmodem_tty_driver = alloc_tty_driver(NULLMODEM_PAIRS*2);
-	if (!nullmodem_tty_driver)
+	nullmodem_tty_driver = tty_alloc_driver(NULLMODEM_PAIRS*2,
+		TTY_DRIVER_RESET_TERMIOS |
+		TTY_DRIVER_REAL_RAW);
+	if (IS_ERR(nullmodem_tty_driver))
 		return -ENOMEM;
 
 	/* initialize the tty driver */
@@ -821,7 +720,6 @@ static int __init nullmodem_init(void)
 	nullmodem_tty_driver->major = NULLMODEM_MAJOR;
 	nullmodem_tty_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	nullmodem_tty_driver->subtype = SERIAL_TYPE_NORMAL;
-	nullmodem_tty_driver->flags = TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_REAL_RAW ;
 	/* no more devfs subsystem */
 	nullmodem_tty_driver->init_termios = tty_std_termios;
 	nullmodem_tty_driver->init_termios.c_iflag = 0;
@@ -832,6 +730,12 @@ static int __init nullmodem_init(void)
 	nullmodem_tty_driver->init_termios.c_ospeed = 38400;
 
 	tty_set_operations(nullmodem_tty_driver, &serial_ops);
+
+	for (i = 0; i < NULLMODEM_PAIRS; ++i)
+	{
+		tty_port_init(&tport[i]);
+		tty_port_link_device(&tport[i],nullmodem_tty_driver, i);
+	}
 
 	/* register the tty driver */
 	retval = tty_register_driver(nullmodem_tty_driver);
@@ -859,7 +763,10 @@ static void __exit nullmodem_exit(void)
 	del_timer_sync(&nullmodem_timer);
 
 	for (i = 0; i < NULLMODEM_PAIRS*2; ++i)
+	{
 		tty_unregister_device(nullmodem_tty_driver, i);
+		tty_port_destroy(&tport[i]);
+	}
 	tty_unregister_driver(nullmodem_tty_driver);
 
 	/* shut down all of the timers and free the memory */
@@ -868,6 +775,7 @@ static void __exit nullmodem_exit(void)
 		pair_table[i].a.tty = NULL;
 		pair_table[i].b.tty = NULL;
 	}
+	kfree(tport);
 }
 
 module_init(nullmodem_init);
